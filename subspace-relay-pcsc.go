@@ -59,7 +59,7 @@ func main() {
 
 	h := &handler{
 		card: card,
-		clientInfo: &subspacerelaypb.ClientInfo{
+		relayInfo: &subspacerelaypb.RelayInfo{
 			SupportedPayloadTypes: []subspacerelaypb.PayloadType{subspacerelaypb.PayloadType_PAYLOAD_TYPE_PCSC_READER, subspacerelaypb.PayloadType_PAYLOAD_TYPE_PCSC_READER_CONTROL},
 			ConnectionType:        subspacerelaypb.ConnectionType_CONNECTION_TYPE_PCSC,
 			Atr:                   status.Atr,
@@ -68,8 +68,8 @@ func main() {
 	}
 
 	if *direct {
-		h.clientInfo.SupportedPayloadTypes = []subspacerelaypb.PayloadType{subspacerelaypb.PayloadType_PAYLOAD_TYPE_PCSC_READER_CONTROL}
-		h.clientInfo.ConnectionType = subspacerelaypb.ConnectionType_CONNECTION_TYPE_PCSC_DIRECT
+		h.relayInfo.SupportedPayloadTypes = []subspacerelaypb.PayloadType{subspacerelaypb.PayloadType_PAYLOAD_TYPE_PCSC_READER_CONTROL}
+		h.relayInfo.ConnectionType = subspacerelaypb.ConnectionType_CONNECTION_TYPE_PCSC_DIRECT
 	}
 
 	m, err := subspacerelay.New(ctx, brokerURL, "")
@@ -89,13 +89,13 @@ func main() {
 	<-interruptChannel
 	err = m.Close()
 	if err != nil {
-		slog.ErrorContext(ctx, "Error closing client", subspacerelay.ErrorAttrs(err))
+		slog.ErrorContext(ctx, "Error closing relay", subspacerelay.ErrorAttrs(err))
 	}
 }
 
 type handler struct {
-	card       *scard.Card
-	clientInfo *subspacerelaypb.ClientInfo
+	card      *scard.Card
+	relayInfo *subspacerelaypb.RelayInfo
 }
 
 func (h *handler) HandleMQTT(ctx context.Context, r *subspacerelay.SubspaceRelay, p *paho.Publish) bool {
@@ -107,10 +107,10 @@ func (h *handler) HandleMQTT(ctx context.Context, r *subspacerelay.SubspaceRelay
 
 	switch msg := req.Message.(type) {
 	case *subspacerelaypb.Message_Payload:
-		err = r.HandlePayload(ctx, p.Properties, msg.Payload, h.handlePayload, h.clientInfo.SupportedPayloadTypes...)
-	case *subspacerelaypb.Message_RequestClientInfo:
-		err = r.SendReply(ctx, p.Properties, &subspacerelaypb.Message{Message: &subspacerelaypb.Message_ClientInfo{
-			ClientInfo: h.clientInfo,
+		err = r.HandlePayload(ctx, p.Properties, msg.Payload, h.handlePayload, h.relayInfo.SupportedPayloadTypes...)
+	case *subspacerelaypb.Message_RequestRelayInfo:
+		err = r.SendReply(ctx, p.Properties, &subspacerelaypb.Message{Message: &subspacerelaypb.Message_RelayInfo{
+			RelayInfo: h.relayInfo,
 		}})
 	default:
 		err = errors.New("unsupported message")
