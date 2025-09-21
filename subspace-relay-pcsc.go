@@ -8,7 +8,9 @@ import (
 	"github.com/ansel1/merry/v2"
 	"github.com/ebfe/scard"
 	"github.com/eclipse/paho.golang/paho"
+	"github.com/nvx/go-rfid"
 	"github.com/nvx/go-subspace-relay"
+	"github.com/nvx/go-subspace-relay-logger"
 	subspacerelaypb "github.com/nvx/subspace-relay"
 	"log/slog"
 	"os"
@@ -31,7 +33,7 @@ func main() {
 	)
 	flag.Parse()
 
-	subspacerelay.InitLogger("subspace-relay-pcsc")
+	srlog.InitLogger("subspace-relay-pcsc")
 
 	brokerURL := subspacerelay.NotZero(*brokerFlag, os.Getenv("BROKER_URL"), defaultBrokerURL)
 	if brokerURL == "" {
@@ -42,14 +44,14 @@ func main() {
 
 	card, closer, err := connectCard(ctx, *name, *direct)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error connecting to PCSC card", subspacerelay.ErrorAttrs(err))
+		slog.ErrorContext(ctx, "Error connecting to PCSC card", rfid.ErrorAttrs(err))
 		os.Exit(1)
 	}
 	defer closer()
 
 	status, err := card.Status()
 	if err != nil {
-		slog.ErrorContext(ctx, "Error getting card status", subspacerelay.ErrorAttrs(err))
+		slog.ErrorContext(ctx, "Error getting card status", rfid.ErrorAttrs(err))
 		os.Exit(1)
 	}
 
@@ -74,7 +76,7 @@ func main() {
 
 	m, err := subspacerelay.New(ctx, brokerURL, "")
 	if err != nil {
-		slog.ErrorContext(ctx, "Error connecting to server", subspacerelay.ErrorAttrs(err))
+		slog.ErrorContext(ctx, "Error connecting to server", rfid.ErrorAttrs(err))
 		os.Exit(1)
 	}
 
@@ -89,7 +91,7 @@ func main() {
 	<-interruptChannel
 	err = m.Close()
 	if err != nil {
-		slog.ErrorContext(ctx, "Error closing relay", subspacerelay.ErrorAttrs(err))
+		slog.ErrorContext(ctx, "Error closing relay", rfid.ErrorAttrs(err))
 	}
 }
 
@@ -101,7 +103,7 @@ type handler struct {
 func (h *handler) HandleMQTT(ctx context.Context, r *subspacerelay.SubspaceRelay, p *paho.Publish) bool {
 	req, err := r.Parse(ctx, p)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error parsing request message", subspacerelay.ErrorAttrs(err))
+		slog.ErrorContext(ctx, "Error parsing request message", rfid.ErrorAttrs(err))
 		return false
 	}
 
@@ -116,14 +118,14 @@ func (h *handler) HandleMQTT(ctx context.Context, r *subspacerelay.SubspaceRelay
 		err = errors.New("unsupported message")
 	}
 	if err != nil {
-		slog.ErrorContext(ctx, "Error handling request", subspacerelay.ErrorAttrs(err))
+		slog.ErrorContext(ctx, "Error handling request", rfid.ErrorAttrs(err))
 		return false
 	}
 	return true
 }
 
 func (h *handler) handlePayload(ctx context.Context, payload *subspacerelaypb.Payload) (_ []byte, err error) {
-	defer subspacerelay.DeferWrap(&err)
+	defer rfid.DeferWrap(ctx, &err)
 
 	if payload.PayloadType == subspacerelaypb.PayloadType_PAYLOAD_TYPE_PCSC_READER_CONTROL {
 		if payload.Control == nil || *payload.Control > 0xFFFF {
@@ -137,7 +139,7 @@ func (h *handler) handlePayload(ctx context.Context, payload *subspacerelaypb.Pa
 }
 
 func connectCard(ctx context.Context, readerName string, direct bool) (_ *scard.Card, _ func(), err error) {
-	defer subspacerelay.DeferWrap(&err)
+	defer rfid.DeferWrap(ctx, &err)
 
 	sc, err := scard.EstablishContext()
 	if err != nil {
@@ -188,11 +190,11 @@ func connectCard(ctx context.Context, readerName string, direct bool) (_ *scard.
 	closer := func() {
 		err := card.Disconnect(scard.ResetCard)
 		if err != nil {
-			slog.ErrorContext(ctx, "Error disconnecting from reader", subspacerelay.ErrorAttrs(err))
+			slog.ErrorContext(ctx, "Error disconnecting from reader", rfid.ErrorAttrs(err))
 		}
 		err = sc.Release()
 		if err != nil {
-			slog.ErrorContext(ctx, "Error releasing pcsc context", subspacerelay.ErrorAttrs(err))
+			slog.ErrorContext(ctx, "Error releasing pcsc context", rfid.ErrorAttrs(err))
 		}
 	}
 
