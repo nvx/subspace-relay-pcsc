@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdh"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -24,22 +25,46 @@ import (
 // go build -ldflags="-X 'main.defaultBrokerURL=mqtts://user:pass@example.com:1234'"
 var defaultBrokerURL string
 
+const appName = "subspace-relay-pcsc"
+
 func main() {
 	ctx := context.Background()
 	var (
-		name       = flag.String("name", "", "Name of the pcsc reader to use")
-		direct     = flag.Bool("direct", false, "Use direct mode")
-		brokerFlag = flag.String("broker-url", "", "MQTT Broker URL")
+		name         = flag.String("name", "", "Name of the pcsc reader to use")
+		direct       = flag.Bool("direct", false, "Use direct mode")
+		brokerFlag   = flag.String("broker-url", "", "MQTT Broker URL")
+		discovery    = flag.Bool("discovery.plaintext", false, "Enable plaintext discovery")
+		pubKeyString = flag.String("discovery.secure", "", "Enable secure discovery by the provided ECDH key only (hex bytes)")
 	)
 	flag.Parse()
 
-	srlog.InitLogger("subspace-relay-pcsc")
+	srlog.InitLogger(appName)
 
 	brokerURL := subspacerelay.NotZero(*brokerFlag, os.Getenv("BROKER_URL"), defaultBrokerURL)
 	if brokerURL == "" {
 		slog.ErrorContext(ctx, "No broker URI specified, either specify as a flag or set the BROKER_URI environment variable")
 		flag.Usage()
 		os.Exit(2)
+	}
+
+	var pubKey *ecdh.PublicKey
+	if *pubKeyString != "" {
+		var err error
+		var b []byte
+
+		b, err = hex.DecodeString(*pubKeyString)
+		if err != nil {
+			slog.ErrorContext(ctx, "Error decoding public key", rfid.ErrorAttrs(err))
+			flag.Usage()
+			os.Exit(2)
+		}
+
+		pubKey, err = ecdh.X25519().NewPublicKey(b)
+		if err != nil {
+			slog.ErrorContext(ctx, "Error parsing public key", rfid.ErrorAttrs(err))
+			flag.Usage()
+			os.Exit(2)
+		}
 	}
 
 	card, closer, err := connectCard(ctx, *name, *direct)
@@ -60,12 +85,15 @@ func main() {
 	}
 
 	h := &handler{
-		card: card,
+		plaintextDiscovery: *discovery,
+		pubKey:             pubKey,
+		card:               card,
 		relayInfo: &subspacerelaypb.RelayInfo{
 			SupportedPayloadTypes: []subspacerelaypb.PayloadType{subspacerelaypb.PayloadType_PAYLOAD_TYPE_PCSC_READER, subspacerelaypb.PayloadType_PAYLOAD_TYPE_PCSC_READER_CONTROL},
 			ConnectionType:        subspacerelaypb.ConnectionType_CONNECTION_TYPE_PCSC,
 			Atr:                   status.Atr,
 			DeviceName:            status.Reader,
+			UserAgent:             appName,
 		},
 	}
 
@@ -80,9 +108,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	h.discovery = &subspacerelaypb.RelayDiscovery{
+		RelayId:   m.RelayID,
+		RelayInfo: h.relayInfo,
+	}
+
 	m.RegisterHandler(h)
 
 	slog.InfoContext(ctx, "Connected, provide the relay_id to your friendly neighbourhood RFID hacker", slog.String("relay_id", m.RelayID))
+
+	if h.plaintextDiscovery || h.pubKey != nil {
+		err = m.SendDiscoveryResponse(ctx, nil, h.discovery, h.pubKey)
+		if err != nil {
+			slog.ErrorContext(ctx, "Error sending discovery message", rfid.ErrorAttrs(err))
+			os.Exit(1)
+		}
+	}
 
 	interruptChannel := make(chan os.Signal, 10)
 	signal.Notify(interruptChannel, syscall.SIGINT, syscall.SIGTERM)
@@ -96,8 +137,11 @@ func main() {
 }
 
 type handler struct {
-	card      *scard.Card
-	relayInfo *subspacerelaypb.RelayInfo
+	plaintextDiscovery bool
+	pubKey             *ecdh.PublicKey
+	card               *scard.Card
+	relayInfo          *subspacerelaypb.RelayInfo
+	discovery          *subspacerelaypb.RelayDiscovery
 }
 
 func (h *handler) HandleMQTT(ctx context.Context, r *subspacerelay.SubspaceRelay, p *paho.Publish) bool {
@@ -114,6 +158,10 @@ func (h *handler) HandleMQTT(ctx context.Context, r *subspacerelay.SubspaceRelay
 		err = r.SendReply(ctx, p.Properties, &subspacerelaypb.Message{Message: &subspacerelaypb.Message_RelayInfo{
 			RelayInfo: h.relayInfo,
 		}})
+	case *subspacerelaypb.Message_Log:
+		slog.InfoContext(ctx, "Log from controller: "+msg.Log.Message)
+	case *subspacerelaypb.Message_RequestRelayDiscovery:
+		err = r.HandleDiscoveryRequest(ctx, p.Properties, h.discovery, h.plaintextDiscovery, h.pubKey, msg.RequestRelayDiscovery)
 	default:
 		err = errors.New("unsupported message")
 	}
