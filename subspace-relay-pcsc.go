@@ -162,11 +162,20 @@ func (h *handler) HandleMQTT(ctx context.Context, r *subspacerelay.SubspaceRelay
 		slog.InfoContext(ctx, "Log from controller: "+msg.Log.Message)
 	case *subspacerelaypb.Message_RequestRelayDiscovery:
 		err = r.HandleDiscoveryRequest(ctx, p.Properties, h.discovery, h.plaintextDiscovery, h.pubKey, msg.RequestRelayDiscovery)
+	case *subspacerelaypb.Message_Disconnect:
+		slog.InfoContext(ctx, "Controller initiated shutdown")
+		os.Exit(0)
 	default:
 		err = errors.New("unsupported message")
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "Error handling request", rfid.ErrorAttrs(err))
+
+		err = r.SendLog(ctx, &subspacerelaypb.Log{Message: "Error handling request: " + err.Error()})
+		if err != nil {
+			slog.ErrorContext(ctx, "Error sending error log", rfid.ErrorAttrs(err))
+		}
+
 		return false
 	}
 	return true
